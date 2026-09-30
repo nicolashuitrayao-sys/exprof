@@ -1,0 +1,30 @@
+{
+  "name": "exprof",
+  "version": "1.0.0",
+  "description": "Mini SQL Server Profiler para terminal: escucha ejecuciones de stored procedures en vivo",
+  "bin": {
+    "exprof": "bin/exprof.js"
+  },
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "mssql": "^11.0.1"
+  },
+  "license": "MIT",
+  "keywords": [
+    "sql-server",
+    "mssql",
+    "profiler",
+    "extended-events",
+    "stored-procedures",
+    "cli"
+  ],
+  "files": [
+    "bin",
+    ".env.example",
+    "README.md",
+    "LICENSE"
+  ]
+}

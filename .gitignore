@@ -1,0 +1,11 @@
+# Credenciales: nunca subir
+.env
+.env.*
+!.env.example
+!testenv/.env.docker
+profiles.json
+*.pem
+
+node_modules/
+*.log
+.DS_Store

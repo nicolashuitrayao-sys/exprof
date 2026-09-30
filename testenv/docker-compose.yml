@@ -1,0 +1,11 @@
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    platform: linux/amd64
+    container_name: exprof-sql
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "Exprof_Sa#2026"
+      MSSQL_PID: Express
+    ports:
+      - "14330:1433"
