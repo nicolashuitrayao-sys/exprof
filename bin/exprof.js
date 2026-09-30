@@ -36,6 +36,10 @@ Conexion (archivo .env; ver .env.example):
       --encrypt                  Valida el certificado TLS (por defecto confia en el del servidor)
 
 Salida:
+      --redact            Oculta los valores de los parametros (?), deja solo la estructura de la llamada.
+                          Best-effort: revisa la salida antes de compartirla.
+      --for <seg>         Termina solo despues de <seg> segundos
+      --max <n>           Termina solo despues de <n> eventos
       --json              Una linea JSON por evento
       --interval <ms>     Frecuencia de polling (def. 1000)
       --clean             Elimina sesiones exprof_* huerfanas y sale
@@ -63,6 +67,9 @@ try {
       user: { type: 'string', short: 'U' },
       encrypt: { type: 'boolean' },
       json: { type: 'boolean' },
+      redact: { type: 'boolean' },
+      for: { type: 'string' },
+      max: { type: 'string' },
       interval: { type: 'string' },
       clean: { type: 'boolean' },
       help: { type: 'boolean', short: 'h' },
@@ -194,7 +201,39 @@ SELECT * FROM (
 WHERE ev.seq > @last
 ORDER BY ev.seq;`;
 
+// ---------- redaccion de valores ----------
+function redactLiterals(t) {
+  return t
+    .replace(/(N?)'(?:[^']|'')*'/gi, "$1'?'")
+    .replace(/\b0x[0-9a-f]+\b/gi, '0x?')
+    .replace(/(?<![\w@#.\[\]"])-?\d+(?:\.\d+)?(?![\w.])/g, '?');
+}
+function redact(t) {
+  if (!t) return t;
+  // sp_executesql/sp_prepexec: se conservan @statement (con sus literales ocultos) y @params; se ocultan los valores
+  const m = t.match(/^(\s*exec(?:ute)?\s+sp_(?:executesql|prepexec|prepare|cursoropen|cursorprepexec)\b\s*)([\s\S]*)$/i);
+  if (!m) return redactLiterals(t);
+  const rest = m[2];
+  const re = /N?'(?:[^']|'')*'/gi;
+  let out = m[1], kept = 0, pos = 0, mm;
+  while (kept < 2 && (mm = re.exec(rest))) {
+    out += redactLiterals(rest.slice(pos, mm.index));
+    const lit = mm[0];
+    if (kept === 0) {
+      const q = lit.indexOf("'");
+      const inner = lit.slice(q + 1, -1).replace(/''/g, "'");
+      out += lit.slice(0, q + 1) + redactLiterals(inner).replace(/'/g, "''") + "'";
+    } else out += lit;
+    pos = mm.index + lit.length;
+    kept++;
+  }
+  return out + redactLiterals(rest.slice(pos));
+}
+
 function render(r) {
+  if (opts.redact) {
+    r = { ...r, stmt: redact(r.stmt), batch: redact(r.batch), msg: r.msg && redactLiterals(r.msg) };
+  }
   if (opts.json) {
     console.log(JSON.stringify({
       time: r.ts, event: r.event, db: r.db, sp: r.obj, spid: r.spid, login: r.login, host: r.host, app: r.app,
@@ -266,20 +305,30 @@ async function main() {
 
   console.error(`${C.d}${usedEnv.length ? 'env: ' + usedEnv[0] + ' · ' : ''}Escuchando en ${cfg.server}${opts.db ? ` [${opts.db}]` : ''} · filtro: ${patterns.length ? patterns.join(', ') : '(todos)'} · Ctrl+C para salir${C.x}\n`);
 
-  let last = 0;
+  let last = 0, count = 0;
+  const deadline = opts.for ? Date.now() + Number(opts.for) * 1000 : 0;
+  const maxEvents = opts.max ? Number(opts.max) : 0;
+  const finished = () => (deadline && Date.now() >= deadline) || (maxEvents && count >= maxEvents);
   const every = Math.max(200, Number(opts.interval) || 1000);
-  while (!stopping) {
+  while (!stopping && !finished()) {
     try {
       const res = await pool.request()
         .input('name', sql.NVarChar(128), name)
         .input('last', sql.BigInt, last)
         .query(READ_SQL);
-      for (const r of res.recordset) { render(r); last = Math.max(last, Number(r.seq)); }
+      for (const r of res.recordset) {
+        render(r); count++;
+        last = Math.max(last, Number(r.seq));
+        if (maxEvents && count >= maxEvents) break;
+      }
     } catch (e) {
       console.error(`${C.r}poll: ${e.message}${C.x}`);
     }
-    await new Promise((r) => setTimeout(r, every));
+    if (finished()) break;
+    await new Promise((r) => setTimeout(r, Math.min(every, deadline ? Math.max(50, deadline - Date.now()) : every)));
   }
+  console.error(`${C.d}Eventos capturados: ${count}${C.x}`);
+  await stop();
 }
 
 main().catch((e) => {

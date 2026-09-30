@@ -90,6 +90,8 @@ exprof --clean                         # borra sesiones exprof_* huérfanas y sa
 | `--no-batches` | No incluir `EXEC` enviados como batch de texto (solo RPC). |
 | `-S`, `-U` | Sobrescriben servidor y usuario del `.env`. |
 | `--encrypt` | Valida el certificado TLS (por defecto confía en el del servidor). |
+| `--redact` | Oculta los valores de los parámetros (`?`) y deja solo la estructura de la llamada. Best-effort. |
+| `--for <seg>` / `--max <n>` | Termina solo tras `<seg>` segundos o `<n>` eventos (limpia la sesión). |
 | `--json` | Salida en JSON. |
 | `--interval <ms>` | Frecuencia de lectura (por defecto 1000). |
 
@@ -101,6 +103,22 @@ Por defecto se muestra **la llamada** al SP con sus parámetros, tanto si llega 
 - Confirma que la app está conectada al **mismo servidor** que tu `.env` (réplicas, ambientes, balanceadores).
 - Prueba con un trozo del nombre, o con `--all -d <base> --app <app>` para ver cómo llega la llamada.
 - Los mensajes `poll:` o de permisos aparecen en la terminal; revisa que el login tenga los dos permisos.
+
+## Uso con agentes de IA (Claude Code)
+
+`exprof` está pensado para poder correrlo desde un agente: `--for`/`--max` hacen que termine solo, `--json` entrega eventos parseables y `--redact` evita exponer valores reales de parámetros.
+
+```bash
+exprof usp_MiProc --redact --for 20 --json > /tmp/exprof.log &   # dispara la acción y luego lee el log
+```
+
+El repo incluye una skill de Claude Code en [`skills/exprof/SKILL.md`](skills/exprof/SKILL.md). Para instalarla:
+
+```bash
+mkdir -p ~/.claude/skills/exprof && cp skills/exprof/SKILL.md ~/.claude/skills/exprof/
+```
+
+La skill indica al agente cuándo usar `--redact`, que no lea credenciales y cómo interpretar la salida.
 
 ## Probarlo localmente con Docker
 
@@ -123,7 +141,7 @@ Las credenciales de `testenv/` son solo para ese contenedor local desechable.
 
 ## Seguridad y privacidad
 
-- Los eventos incluyen **los valores de los parámetros**, que pueden ser datos personales o sensibles. Úsalo solo en entornos donde tengas autorización y no compartas la salida sin anonimizarla.
+- Los eventos incluyen **los valores de los parámetros**, que pueden ser datos personales o sensibles. Úsalo solo en entornos donde tengas autorización, usa `--redact` cuando la salida vaya a compartirse o a un agente de IA, y no la compartas sin revisarla (la redacción es best-effort).
 - Nunca subas tu `.env` al repositorio (ya está en `.gitignore`).
 - Usa un login dedicado con los permisos mínimos indicados arriba.
 
