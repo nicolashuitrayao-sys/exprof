@@ -84,3 +84,26 @@ test('la cadena de conexion nunca muestra la clave ni su largo', () => {
   assert.ok(s.includes(`Password=${MASK}`));
   assert.ok(connectionString({ server: 's', database: 'd', user: 'u', password: 'x' }).includes(`Password=${MASK}`));
 });
+
+test('parseEvents extrae columnas del XML del ring buffer y decodifica entidades', () => {
+  const { parseEvents } = require('../lib/core');
+  const ev = (seq, stmt) => `<event name="rpc_completed" package="sqlserver" timestamp="2026-10-02T19:37:58.322Z">
+    <data name="duration"><type name="uint64" package="package0"></type><value>21930</value></data>
+    <data name="row_count"><type name="uint64" package="package0"></type><value>1</value></data>
+    <data name="result"><type name="rpc_return_result" package="sqlserver"></type><value>0</value><text>OK</text></data>
+    <data name="object_name"><type name="unicode_string" package="package0"></type><value>usp_X</value></data>
+    <data name="statement"><type name="unicode_string" package="package0"></type><value>${stmt}</value></data>
+    <action name="database_name" package="sqlserver"><type name="unicode_string" package="package0"></type><value>Db &amp; Co</value></action>
+    <action name="session_id" package="sqlserver"><type name="uint16" package="package0"></type><value>55</value></action>
+    <action name="event_sequence" package="package0"><type name="uint64" package="package0"></type><value>${seq}</value></action>
+  </event>`;
+  const rows = parseEvents(ev(8, 'exec usp_X @a=N&apos;&lt;ñ&gt;&apos;') + ev(7, 'exec usp_X'));
+  assert.deepEqual(rows.map((r) => r.seq), [7, 8]);
+  const r = rows[1];
+  assert.equal(r.event, 'rpc_completed');
+  assert.equal(r.ts.toISOString(), '2026-10-02T19:37:58.322Z');
+  assert.equal(r.stmt, "exec usp_X @a=N'<ñ>'");
+  assert.equal(r.db, 'Db & Co');
+  assert.deepEqual([r.duration_us, r.rows, r.result, r.spid, r.obj], [21930, 1, 'OK', 55, 'usp_X']);
+  assert.deepEqual(parseEvents(''), []);
+});

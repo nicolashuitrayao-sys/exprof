@@ -181,13 +181,16 @@ async function runPlain() {
 
   let count = 0, stopping = false;
   const maxEvents = opts.max ? Number(opts.max) : 0;
-  const stop = async () => {
-    if (stopping) return;
+  const stop = async (signal) => {
+    if (stopping) {
+      if (typeof signal === 'string') process.exit(1); // segundo Ctrl+C: salir sin esperar
+      return;
+    }
     stopping = true;
-    const name = profiler.session;
     console.error(`${C.d}Eventos capturados: ${count}${C.x}`);
-    await profiler.close();
-    console.error(`\n${C.d}Sesion ${name} eliminada.${C.x}`);
+    const r = await profiler.close();
+    if (r.error) console.error(`\n${C.y}No se pudo confirmar la eliminacion de la sesion ${r.session} (${r.error.message}). Limpiala con: exprof --clean${C.x}`);
+    else console.error(`\n${C.d}Sesion ${r.session} eliminada.${C.x}`);
     process.exit(0);
   };
   process.on('SIGINT', stop);
@@ -201,7 +204,8 @@ async function runPlain() {
     }
     if (maxEvents && count >= maxEvents) stop();
   });
-  profiler.on('poll-error', (e) => console.error(`${C.r}poll: ${e.message}${C.x}`));
+  profiler.on('poll-error', (e) => console.error(`${C.r}poll: ${core.explainError(e)}${C.x}`));
+  profiler.on('lost', (n) => console.error(`${C.y}aviso: se perdieron ${n} eventos por volumen; acota el filtro${C.x}`));
 
   await profiler.start(filter, { interval: opts.interval });
   const envLabel = usedEnv.length ? 'env: ' + path.relative(process.cwd(), usedEnv[0]) + ' · ' : '';

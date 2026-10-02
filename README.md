@@ -5,33 +5,40 @@ Mini **SQL Server Profiler para la terminal**. Escucha en vivo las llamadas a un
 Pensado para quien no tiene el Profiler clásico (por ejemplo en Mac) y necesita una solución rápida: abres `exprof`, defines el filtro y ves qué le está llegando al SP.
 
 ```
- ◆ exprof  mini SQL Server Profiler                                                   ● CAPTURANDO 00:42
-╭─ Conexión ──────────────────────────────────────────────────────────────────────── env: .env ─╮
-│ Cadena     Server=mi-servidor,1433;Database=master;User Id=app_lectura;Password=••••••••;…     │
-│ Usuario    app_lectura                                     Contraseña •••••••• .env [p] cambiar │
-│ Servidor   SQLPROD01 · Microsoft SQL Server 2022 16.0.4295.3 · Standard Edition    [e] editar │
-│ Filtro     SP: usp_Pedido · base: Ventas                                          [f] editar │
-╰─────────────────────────────────────────────────────────────────────────────────────────────╯
-╭─ SPs ejecutados · 3 ─────────────────────────────────────────────── ▲ siguiendo lo más reciente ─╮
-│   HORA         VÍA   SP                         ARGUMENTOS                  DURACIÓN  FILAS  ESTADO │
-│ ▸ 10:39:05.090 RPC   dbo.usp_RegistrarPedido    @ClienteId=2, @Monto=1234…  21.4 ms   1      OK     │
-│   10:39:04.871 BATCH dbo.usp_CalcularTotal      @ClienteId=1, @Total=@t     4.1 ms    2      OK     │
-╰─────────────────────────────────────────────────────────────────────────────────────────────╯
-╭─ Detalle ───────────────────────────────────────────────────────────────────────────── RPC ─╮
-│ dbo.usp_RegistrarPedido  Ventas · spid 63 · app@mi-pc · mi-app                              │
-│ PARÁMETRO   TIPO           ORIGEN     VALOR                                                 │
-│ @ClienteId  int            declarado  2                                                     │
-│ @Monto      decimal(12,2)  declarado  1234.50                                               │
-│ RAW tal como llegó al servidor  [c] copiar                                                  │
-│ exec sp_executesql N'EXEC dbo.usp_RegistrarPedido @ClienteId=@p0, @Monto=@p1',N'@p0 int,…   │
-│ EXEC listo para SSMS / Azure Data Studio  [y] copiar                                        │
-│ USE [Ventas];                                                                               │
-│ EXEC dbo.usp_RegistrarPedido @ClienteId = 2, @Monto = 1234.50;                              │
-╰─────────────────────────────────────────────────────────────────────────────────────────────╯
-╭─ Actividad ─────────────────────────────────────────────────────────────────────────────────╮
-│ 10:38:51 ✓ Captura iniciada · sesión exprof_4211_murdm2kn · SP: usp_Pedido · base: Ventas   │
-╰─────────────────────────────────────────────────────────────────────────────────────────────╯
-s detener  ↑↓ navegar  c copiar raw  y copiar EXEC  p contraseña  f filtro  r redactar  ? ayuda  q salir
+ ◆ exprof   mini SQL Server Profiler                                                 ● CAPTURANDO 00:42
+╭─ Conexión ──────────────── e editar  p contraseña ─╮ ╭─ Captura ──── s detener  f filtro  r redactar ─╮
+│ Servidor    mi-servidor,1433   SQL Server 2022 · … │ │ Estado      ● Capturando · 3 eventos           │
+│ Base        master                                 │ │ SPs         usp_Pedido                         │
+│ Usuario     app_lectura                            │ │ Ámbito      base Ventas  ·  app todas  ·  …    │
+│ Contraseña  ••••••••  desde .env                   │ │ Redacción   desactivada                        │
+╰────────────────────────────────────────────────────╯ ╰────────────────────────────────────────────────╯
+  Cadena  Server=mi-servidor,1433;Database=master;User Id=app_lectura;Password=••••••••;Encrypt=True;…
+╭─ SPs ejecutados · 3 ───────────────────────────────────────────────── ▲ siguiendo lo más reciente ─╮
+│   Hora          Vía    SP                         Argumentos                   Duración   Filas    │
+│ ─────────────────────────────────────────────────────────────────────────────────────────────────  │
+│ ▌ 10:39:05.090  RPC    dbo.usp_RegistrarPedido    @ClienteId=2, @Monto=1234…    21.4 ms       1    │
+│   10:39:04.871  BATCH  dbo.usp_CalcularTotal      @ClienteId=1, @Total=@t        4.1 ms       2    │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Detalle · dbo.usp_RegistrarPedido ──────────────────────────────────────── RPC · vía sp_executesql ─╮
+│ Ventas   ·   spid 63   ·   app@mi-pc   ·   mi-app                                                  │
+│ duración 21.4 ms    cpu 13.0 ms    lecturas 66    escrituras 2    filas 1    estado OK             │
+│                                                                                                    │
+│ Argumentos (2) ──────────────────────────────────────────────────────────────────────────────────  │
+│ Parámetro    Tipo           Origen      Valor                                                      │
+│ @ClienteId   int            declarado   2                                                          │
+│ @Monto       decimal(12,2)  declarado   1234.50                                                    │
+│                                                                                                    │
+│ Llamada raw ──────────────────────────────────────────────────────────────────────────── c copiar  │
+│ exec sp_executesql N'EXEC dbo.usp_RegistrarPedido @ClienteId=@p0, @Monto=@p1',N'@p0 int,@p1 dec…   │
+│                                                                                                    │
+│ EXEC para SSMS ───────────────────────────────────────────────────────────────────────── y copiar  │
+│ USE [Ventas];                                                                                      │
+│ EXEC dbo.usp_RegistrarPedido @ClienteId = 2, @Monto = 1234.50;                                     │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Actividad ────────────────────────────────────────────────────────────────────────────────────────╮
+│ 10:38:51  ✓  Captura iniciada · sesión exprof_4211_murdm2kn · SP: usp_Pedido · base: Ventas        │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ s detener  ↑↓ navegar  g más reciente  │  c copiar raw  y copiar EXEC  │  ? ayuda  q salir
 ```
 
 Para scripts y agentes de IA sigue existiendo el modo de texto (`--json`, `--for`, `--max`, `--plain`).
@@ -101,7 +108,7 @@ exprof usp_MiProc -d MiBase  # abre la interfaz con el filtro puesto y la captur
 
 En una terminal interactiva `exprof` abre una interfaz a pantalla completa con:
 
-- **Conexión**: cadena de conexión actual (con la clave enmascarada), usuario, origen de la clave (`.env` o manual), servidor y versión, filtro activo.
+- **Conexión** y **Captura** (dos tarjetas arriba): servidor y versión, base, usuario, origen de la clave (`.env` o manual); estado de la captura, SPs del filtro, ámbito (base, app, login) y redacción. Debajo, la cadena de conexión con la clave enmascarada.
 - **SPs ejecutados**: hora, vía (`RPC`, `BATCH`), nombre, argumentos, duración, filas y estado. Lo más reciente arriba.
 - **Detalle** del SP seleccionado: cada parámetro con su **tipo** y de dónde salió, la llamada **raw** tal como llegó al servidor y una versión **EXEC** lista para pegar en SSMS / Azure Data Studio (desenvuelve `sp_executesql` y declara las variables `OUTPUT`).
 - **Actividad**: conexión, inicio/detención de la captura, errores de conexión o permisos, copias al portapapeles.
@@ -119,7 +126,7 @@ En una terminal interactiva `exprof` abre una interfaz a pantalla completa con:
 | `x` | Limpiar la lista |
 | `o` | Eliminar sesiones `exprof_*` huérfanas |
 | `?` | Ayuda |
-| `q` / `Ctrl+C` | Salir (elimina la sesión del servidor) |
+| `q` / `Ctrl+C` | Salir (elimina la sesión del servidor; una segunda vez fuerza la salida) |
 
 **Tipos de los parámetros.** La columna *ORIGEN* indica de dónde sale cada tipo:
 
@@ -206,7 +213,9 @@ Tests unitarios del parser de llamadas y la redacción: `npm test`.
 
 ## Limitaciones
 
-- El ring buffer es de 4 MB: en servidores con muchísimo tráfico y sin filtro específico pueden perderse eventos.
+- El ring buffer guarda hasta 1000 eventos (4 MB). Con muchísimo tráfico y sin filtro específico (por ejemplo `*`) se pierden eventos: exprof lo avisa con el total perdido. Acota el filtro por SP, base o app.
+- Sin filtro de SP se descartan `sp_reset_connection` (lo envía el pool de conexiones de cada driver) y las sesiones de sistema.
+- Al salir, exprof espera como máximo unos segundos a que el servidor confirme la eliminación de la sesión. Si no responde, sale igual e indica la sesión a limpiar con `exprof --clean`.
 - Un `RAISERROR` no marca el RPC como fallido; por eso `--errors` los captura aparte (esos eventos no incluyen el nombre del SP).
 - Cada consulta lee el buffer completo, así que conviene no usar `--interval` demasiado bajo.
 
