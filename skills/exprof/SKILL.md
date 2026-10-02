@@ -23,6 +23,7 @@ exprof <sp> [<sp2> ...] --redact --for <seg> --json > "$LOG" 2>&1 &
 ```
 
 - `--for <seg>` / `--max <n>`: **siempre** poner uno, así termina solo y borra su sesión (no hace falta `kill`).
+- Sin `--for`/`--max`/`--json` y en una terminal, `exprof` abre una **interfaz interactiva** pensada para personas: no usarla desde el agente. Si el usuario quiere explorar a mano, sugerirle `exprof` (o `exprof <sp>`) en su propia terminal.
 - `--json`: una línea JSON por evento (campos: `time`, `event`, `db`, `sp`, `spid`, `login`, `host`, `app`, `duration_ms`, `cpu_ms`, `reads`, `rows`, `result`, `text`). Sin `--json` la salida es legible para humanos.
 - Sin `--redact` solo si aplica la regla 1.
 - El nombre del SP es substring sin distinguir mayúsculas; con `%` se usa como LIKE.
