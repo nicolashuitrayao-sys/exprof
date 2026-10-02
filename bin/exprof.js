@@ -1,17 +1,24 @@
 #!/usr/bin/env node
 'use strict';
-const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const { parseArgs } = require('util');
-const sql = require('mssql');
+const core = require('../lib/core');
 
 const HELP = `exprof - mini SQL Server Profiler (Extended Events) para terminal
 
 Uso:
+  exprof                  Abre la interfaz interactiva (TUI)
   exprof [opciones] [sp ...]
 
-Filtro de SP (obligatorio salvo --all):
+Interfaz:
+  En una terminal interactiva se abre la TUI: conexion actual, inicio/detencion de la
+  captura, lista de SPs con argumentos, tipos y llamada raw para copiar. Atajos con '?'.
+  Con --json, --for, --max o --plain (o si la salida no es una terminal) se usa el modo
+  de texto, pensado para scripts y agentes.
+      --plain             Fuerza el modo de texto aunque sea una terminal
+      --tui               Fuerza la interfaz interactiva
+
+Filtro de SP (obligatorio en modo texto salvo --all o EXPROF_FILTER):
   sp ...                  Nombres/patrones de SP. Substring por defecto; si incluyes % se usa como LIKE exacto.
   -f, --sp <patron>       Igual que arriba (repetible)
   -a, --all               Sin filtro de SP (todo RPC)
@@ -31,6 +38,7 @@ Por defecto muestra cada llamada al SP con sus argumentos y valores (RPC y EXEC 
 Conexion (archivo .env; ver .env.example):
   Se busca en: $EXPROF_ENV, ./.env, ~/.exprof.env, <carpeta de exprof>/.env
   EXPROF_SERVER (host[,puerto]) · EXPROF_USER · EXPROF_PASSWORD · EXPROF_DATABASE
+  Valores por defecto opcionales: EXPROF_FILTER (SPs) · EXPROF_REDACT (1/0) · EXPROF_ENCRYPT (1/0)
   -S, --server <host[,puerto]>   Sobrescribe EXPROF_SERVER
   -U, --user <login>             Sobrescribe EXPROF_USER (Windows auth no disponible en macOS)
       --encrypt                  Valida el certificado TLS (por defecto confia en el del servidor)
@@ -38,6 +46,7 @@ Conexion (archivo .env; ver .env.example):
 Salida:
       --redact            Oculta los valores de los parametros (?), deja solo la estructura de la llamada.
                           Best-effort: revisa la salida antes de compartirla.
+      --no-redact         Ignora EXPROF_REDACT=1 del .env
       --for <seg>         Termina solo despues de <seg> segundos
       --max <n>           Termina solo despues de <n> eventos
       --json              Una linea JSON por evento
@@ -68,10 +77,13 @@ try {
       encrypt: { type: 'boolean' },
       json: { type: 'boolean' },
       redact: { type: 'boolean' },
+      'no-redact': { type: 'boolean' },
       for: { type: 'string' },
       max: { type: 'string' },
       interval: { type: 'string' },
       clean: { type: 'boolean' },
+      plain: { type: 'boolean' },
+      tui: { type: 'boolean' },
       help: { type: 'boolean', short: 'h' },
     },
   }));
@@ -82,157 +94,44 @@ try {
 if (opts.statements) opts['show-source'] = true;
 if (opts.help) { console.log(HELP); process.exit(0); }
 
-// ---------- config (.env) ----------
-// Prioridad: variables ya exportadas > EXPROF_ENV > ./.env > ~/.exprof.env > <carpeta de exprof>/.env
-function loadDotenv(file) {
-  if (!fs.existsSync(file)) return false;
-  for (const raw of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
-    const m = raw.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
-    if (!m || m[1] === undefined) continue;
-    let v = m[2];
-    if (/^(["']).*\1$/.test(v)) v = v.slice(1, -1);
-    else v = v.replace(/\s+#.*$/, '');
-    if (process.env[m[1]] === undefined) process.env[m[1]] = v;
-  }
-  return true;
-}
-const envFiles = [process.env.EXPROF_ENV, path.join(process.cwd(), '.env'), path.join(os.homedir(), '.exprof.env'), path.join(__dirname, '..', '.env')].filter(Boolean);
-if (process.env.EXPROF_ENV && !fs.existsSync(process.env.EXPROF_ENV)) {
-  console.error(`EXPROF_ENV apunta a un archivo que no existe: ${process.env.EXPROF_ENV}`);
+let usedEnv;
+try {
+  usedEnv = core.loadEnv();
+} catch (e) {
+  console.error(e.message);
   process.exit(2);
 }
-const usedEnv = envFiles.filter(loadDotenv);
-const cfg = {
-  server: opts.server || process.env.EXPROF_SERVER || 'localhost',
-  user: opts.user || process.env.EXPROF_USER,
-  password: process.env.EXPROF_PASSWORD,
-  database: process.env.EXPROF_DATABASE || 'master',
+const { cfg, defaults } = core.readConfig({ server: opts.server, user: opts.user, encrypt: opts.encrypt });
+const cliPatterns = [...(opts.sp || []), ...positionals];
+const patterns = cliPatterns.length ? cliPatterns : opts.all ? [] : defaults.filter;
+const redactOn = opts['no-redact'] ? false : !!(opts.redact || defaults.redact);
+const filter = {
+  patterns,
+  all: !!opts.all,
+  db: opts.db,
+  app: opts.app,
+  login: opts.login,
+  minMs: opts['min-ms'],
+  errors: !!opts.errors,
+  showSource: !!opts['show-source'],
+  noBatches: !!opts['no-batches'],
 };
-const [host, port] = cfg.server.split(',');
-const pool = new sql.ConnectionPool({
-  server: host,
-  port: port ? Number(port) : undefined,
-  user: cfg.user,
-  password: cfg.password,
-  database: cfg.database,
-  requestTimeout: 30000,
-  options: { encrypt: true, trustServerCertificate: !opts.encrypt, enableArithAbort: true },
-});
 
-// ---------- helpers ----------
-const lit = (s) => "N'" + String(s).replace(/'/g, "''") + "'";
-const like = (col, pat) => {
-  const p = pat.includes('%') ? pat : `%${pat}%`; // sin % -> substring; '_' matchea cualquier caracter (incluido '_')
-  return `sqlserver.like_i_sql_unicode_string(${col}, ${lit(p)})`;
-};
+const interactive = process.stdout.isTTY && process.stdin.isTTY;
+const wantsTui = opts.tui || (interactive && !opts.plain && !opts.json && !opts.for && !opts.max && !opts.clean);
+if (opts.tui && !interactive) {
+  console.error('--tui necesita una terminal interactiva (stdin y stdout TTY).');
+  process.exit(2);
+}
+
+// ---------- modo texto (scripts / agentes) ----------
 const C = process.stdout.isTTY && !process.env.NO_COLOR
   ? { d: '\x1b[2m', r: '\x1b[31m', g: '\x1b[32m', y: '\x1b[33m', c: '\x1b[36m', b: '\x1b[1m', x: '\x1b[0m' }
   : { d: '', r: '', g: '', y: '', c: '', b: '', x: '' };
 
-const ACTIONS = `ACTION (sqlserver.database_name, sqlserver.client_app_name, sqlserver.client_hostname, sqlserver.username, sqlserver.session_id, package0.event_sequence)`;
-
-function buildSession(name, patterns) {
-  const common = [];
-  if (opts.db) common.push(`sqlserver.database_name = ${lit(opts.db)}`);
-  if (opts.app) common.push(like('sqlserver.client_app_name', opts.app));
-  if (opts.login) common.push(like('sqlserver.username', opts.login));
-  const minUs = opts['min-ms'] ? Math.round(Number(opts['min-ms']) * 1000) : 0;
-  if (minUs > 0) common.push(`duration >= ${minUs}`);
-  const spFilter = patterns.length ? '(' + patterns.map((p) => like('object_name', p)).join(' OR ') + ')' : null;
-
-  const where = (extra) => {
-    const parts = [...common, ...extra].filter(Boolean);
-    return parts.length ? `WHERE (${parts.join(' AND ')})` : '';
-  };
-  // ORMs/drivers envuelven la llamada en sp_executesql/sp_prepexec: el SP solo aparece dentro del texto (statement)
-  const rpcSp = patterns.length ? '(' + patterns.map((p) => `${like('object_name', p)} OR ${like('statement', p)}`).join(' OR ') + ')' : null;
-  const rpcExtra = [rpcSp, opts.errors ? 'result <> 0' : null];
-  const events = [`ADD EVENT sqlserver.rpc_completed (SET collect_statement=(1) ${ACTIONS} ${where(rpcExtra)})`];
-  if (opts['show-source']) {
-    events.push(`ADD EVENT sqlserver.sp_statement_completed (SET collect_object_name=(1), collect_statement=(1) ${ACTIONS} ${where([spFilter])})`);
-  }
-  if (!opts['no-batches'] && patterns.length) {
-    const b = '(' + patterns.map((p) => like('batch_text', p)).join(' OR ') + ')';
-    events.push(`ADD EVENT sqlserver.sql_batch_completed (${ACTIONS} ${where([b, opts.errors ? 'result <> 0' : null])})`);
-  }
-  if (opts.errors) {
-    const ec = [...common.filter((c) => !c.startsWith('duration')), 'severity > 10'];
-    events.push(`ADD EVENT sqlserver.error_reported (${ACTIONS} WHERE (${ec.join(' AND ')}))`);
-  }
-  return `CREATE EVENT SESSION [${name}] ON SERVER
-${events.join(',\n')}
-ADD TARGET package0.ring_buffer (SET max_memory = 4096)
-WITH (MAX_DISPATCH_LATENCY = 1 SECONDS, EVENT_RETENTION_MODE = ALLOW_SINGLE_EVENT_LOSS, STARTUP_STATE = OFF);`;
-}
-
-const READ_SQL = `
-SELECT * FROM (
-  SELECT
-    x.e.value('(@name)[1]','nvarchar(60)') AS event,
-    x.e.value('(@timestamp)[1]','datetime2(3)') AS ts,
-    x.e.value('(action[@name="event_sequence"]/value)[1]','bigint') AS seq,
-    x.e.value('(data[@name="object_name"]/value)[1]','nvarchar(400)') AS obj,
-    x.e.value('(data[@name="statement"]/value)[1]','nvarchar(max)') AS stmt,
-    x.e.value('(data[@name="batch_text"]/value)[1]','nvarchar(max)') AS batch,
-    x.e.value('(data[@name="duration"]/value)[1]','bigint') AS duration_us,
-    x.e.value('(data[@name="cpu_time"]/value)[1]','bigint') AS cpu_us,
-    x.e.value('(data[@name="logical_reads"]/value)[1]','bigint') AS reads,
-    x.e.value('(data[@name="writes"]/value)[1]','bigint') AS writes,
-    x.e.value('(data[@name="row_count"]/value)[1]','bigint') AS rows,
-    x.e.value('(data[@name="result"]/text)[1]','nvarchar(30)') AS result,
-    x.e.value('(data[@name="nest_level"]/value)[1]','int') AS nest,
-    x.e.value('(data[@name="line_number"]/value)[1]','int') AS line,
-    x.e.value('(data[@name="message"]/value)[1]','nvarchar(max)') AS msg,
-    x.e.value('(data[@name="error_number"]/value)[1]','int') AS errno,
-    x.e.value('(data[@name="severity"]/value)[1]','int') AS sev,
-    x.e.value('(action[@name="database_name"]/value)[1]','nvarchar(128)') AS db,
-    x.e.value('(action[@name="client_app_name"]/value)[1]','nvarchar(256)') AS app,
-    x.e.value('(action[@name="client_hostname"]/value)[1]','nvarchar(128)') AS host,
-    x.e.value('(action[@name="username"]/value)[1]','nvarchar(128)') AS login,
-    x.e.value('(action[@name="session_id"]/value)[1]','int') AS spid
-  FROM (
-    SELECT CAST(t.target_data AS xml) AS d
-    FROM sys.dm_xe_session_targets t
-    JOIN sys.dm_xe_sessions s ON s.address = t.event_session_address
-    WHERE s.name = @name AND t.target_name = 'ring_buffer'
-  ) q
-  CROSS APPLY q.d.nodes('RingBufferTarget/event') x(e)
-) ev
-WHERE ev.seq > @last
-ORDER BY ev.seq;`;
-
-// ---------- redaccion de valores ----------
-function redactLiterals(t) {
-  return t
-    .replace(/(N?)'(?:[^']|'')*'/gi, "$1'?'")
-    .replace(/\b0x[0-9a-f]+\b/gi, '0x?')
-    .replace(/(?<![\w@#.\[\]"])-?\d+(?:\.\d+)?(?![\w.])/g, '?');
-}
-function redact(t) {
-  if (!t) return t;
-  // sp_executesql/sp_prepexec: se conservan @statement (con sus literales ocultos) y @params; se ocultan los valores
-  const m = t.match(/^(\s*exec(?:ute)?\s+sp_(?:executesql|prepexec|prepare|cursoropen|cursorprepexec)\b\s*)([\s\S]*)$/i);
-  if (!m) return redactLiterals(t);
-  const rest = m[2];
-  const re = /N?'(?:[^']|'')*'/gi;
-  let out = m[1], kept = 0, pos = 0, mm;
-  while (kept < 2 && (mm = re.exec(rest))) {
-    out += redactLiterals(rest.slice(pos, mm.index));
-    const lit = mm[0];
-    if (kept === 0) {
-      const q = lit.indexOf("'");
-      const inner = lit.slice(q + 1, -1).replace(/''/g, "'");
-      out += lit.slice(0, q + 1) + redactLiterals(inner).replace(/'/g, "''") + "'";
-    } else out += lit;
-    pos = mm.index + lit.length;
-    kept++;
-  }
-  return out + redactLiterals(rest.slice(pos));
-}
-
 function render(r) {
-  if (opts.redact) {
-    r = { ...r, stmt: redact(r.stmt), batch: redact(r.batch), msg: r.msg && redactLiterals(r.msg) };
+  if (redactOn) {
+    r = { ...r, stmt: core.redact(r.stmt), batch: core.redact(r.batch), msg: r.msg && core.redactLiterals(r.msg) };
   }
   if (opts.json) {
     console.log(JSON.stringify({
@@ -265,74 +164,69 @@ function render(r) {
   console.log(head + '\n' + who + (body ? `\n  ${C.c}${body.length > 600 ? body.slice(0, 600) + '…' : body}${C.x}` : ''));
 }
 
-async function clean() {
-  const res = await pool.request().query(`SELECT name FROM sys.server_event_sessions WHERE name LIKE 'exprof[_]%'`);
-  for (const { name } of res.recordset) {
-    await pool.request().query(`DROP EVENT SESSION [${name}] ON SERVER`);
-    console.log(`Eliminada ${name}`);
-  }
-  if (!res.recordset.length) console.log('No hay sesiones exprof_* huerfanas.');
-}
-
-async function main() {
-  const patterns = [...(opts.sp || []), ...positionals];
+async function runPlain() {
   if (!patterns.length && !opts.all && !opts.clean) {
-    console.error('Indica al menos un SP a escuchar (ej: exprof usp_MiProc) o usa --all.\n');
+    console.error('Indica al menos un SP a escuchar (ej: exprof usp_MiProc), define EXPROF_FILTER o usa --all.\n');
     console.error(HELP);
     process.exit(2);
   }
+  const profiler = new core.Profiler();
+  await profiler.connect(cfg);
+  if (opts.clean) {
+    const dropped = await profiler.clean();
+    for (const name of dropped) console.log(`Eliminada ${name}`);
+    if (!dropped.length) console.log('No hay sesiones exprof_* huerfanas.');
+    return profiler.close();
+  }
 
-  await pool.connect();
-  if (opts.clean) { await clean(); return pool.close(); }
-
-  const name = `exprof_${process.pid}_${Date.now().toString(36)}`;
-  await pool.request().batch(buildSession(name, patterns));
-  await pool.request().batch(`ALTER EVENT SESSION [${name}] ON SERVER STATE = START`);
-
-  let stopping = false;
-  const stop = async () => {
-    if (stopping) return;
+  let count = 0, stopping = false;
+  const maxEvents = opts.max ? Number(opts.max) : 0;
+  const stop = async (signal) => {
+    if (stopping) {
+      if (typeof signal === 'string') process.exit(1); // segundo Ctrl+C: salir sin esperar
+      return;
+    }
     stopping = true;
-    try {
-      await pool.request().batch(`IF EXISTS (SELECT 1 FROM sys.server_event_sessions WHERE name='${name}') DROP EVENT SESSION [${name}] ON SERVER`);
-      await pool.close();
-    } catch { /* al salir no importa */ }
-    console.error(`\n${C.d}Sesion ${name} eliminada.${C.x}`);
+    console.error(`${C.d}Eventos capturados: ${count}${C.x}`);
+    const r = await profiler.close();
+    if (r.error) console.error(`\n${C.y}No se pudo confirmar la eliminacion de la sesion ${r.session} (${r.error.message}). Limpiala con: exprof --clean${C.x}`);
+    else console.error(`\n${C.d}Sesion ${r.session} eliminada.${C.x}`);
     process.exit(0);
   };
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
 
-  console.error(`${C.d}${usedEnv.length ? 'env: ' + usedEnv[0] + ' · ' : ''}Escuchando en ${cfg.server}${opts.db ? ` [${opts.db}]` : ''} · filtro: ${patterns.length ? patterns.join(', ') : '(todos)'} · Ctrl+C para salir${C.x}\n`);
-
-  let last = 0, count = 0;
-  const deadline = opts.for ? Date.now() + Number(opts.for) * 1000 : 0;
-  const maxEvents = opts.max ? Number(opts.max) : 0;
-  const finished = () => (deadline && Date.now() >= deadline) || (maxEvents && count >= maxEvents);
-  const every = Math.max(200, Number(opts.interval) || 1000);
-  while (!stopping && !finished()) {
-    try {
-      const res = await pool.request()
-        .input('name', sql.NVarChar(128), name)
-        .input('last', sql.BigInt, last)
-        .query(READ_SQL);
-      for (const r of res.recordset) {
-        render(r); count++;
-        last = Math.max(last, Number(r.seq));
-        if (maxEvents && count >= maxEvents) break;
-      }
-    } catch (e) {
-      console.error(`${C.r}poll: ${e.message}${C.x}`);
+  profiler.on('events', (rows) => {
+    for (const r of rows) {
+      if (stopping || (maxEvents && count >= maxEvents)) break;
+      render(r);
+      count++;
     }
-    if (finished()) break;
-    await new Promise((r) => setTimeout(r, Math.min(every, deadline ? Math.max(50, deadline - Date.now()) : every)));
-  }
-  console.error(`${C.d}Eventos capturados: ${count}${C.x}`);
-  await stop();
+    if (maxEvents && count >= maxEvents) stop();
+  });
+  profiler.on('poll-error', (e) => console.error(`${C.r}poll: ${core.explainError(e)}${C.x}`));
+  profiler.on('lost', (n) => console.error(`${C.y}aviso: se perdieron ${n} eventos por volumen; acota el filtro${C.x}`));
+
+  await profiler.start(filter, { interval: opts.interval });
+  const envLabel = usedEnv.length ? 'env: ' + path.relative(process.cwd(), usedEnv[0]) + ' · ' : '';
+  console.error(`${C.d}${envLabel}Escuchando en ${cfg.server}${opts.db ? ` [${opts.db}]` : ''} · filtro: ${patterns.length ? patterns.join(', ') : '(todos)'}${redactOn ? ' · redactado' : ''} · Ctrl+C para salir${C.x}\n`);
+  if (opts.for) setTimeout(stop, Number(opts.for) * 1000);
 }
 
-main().catch((e) => {
-  const hint = /permission|denied/i.test(e.message) ? '\nNecesitas ALTER ANY EVENT SESSION y VIEW SERVER STATE (GRANT ... TO [login]).' : '';
-  console.error(`${C.r}Error: ${e.message}${C.x}${hint}`);
-  process.exit(1);
-});
+if (wantsTui) {
+  import('../lib/tui.mjs')
+    .then(({ runTui }) => runTui({
+      cfg, usedEnv, filter, redact: redactOn,
+      autoStart: cliPatterns.length > 0 || !!opts.all,
+      interval: opts.interval,
+    }))
+    .catch((e) => {
+      console.error(`No se pudo abrir la interfaz: ${e.message}\nUsa --plain para el modo de texto.`);
+      process.exit(1);
+    });
+} else {
+  runPlain().catch((e) => {
+    console.error(`${C.r}Error: ${core.explainError(e)}${C.x}`);
+    process.exit(1);
+  });
+}

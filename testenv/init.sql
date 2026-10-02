@@ -44,3 +44,8 @@ ALTER ROLE db_datareader ADD MEMBER app_user;
 ALTER ROLE db_datawriter ADD MEMBER app_user;
 GRANT EXECUTE TO app_user;
 GO
+-- Opcional: exprof lee los tipos declarados de los parametros (sys.parameters) para mostrarlos en la TUI.
+-- Sin esto, los tipos se infieren desde los valores capturados.
+IF USER_ID('exprof_user') IS NULL CREATE USER exprof_user FOR LOGIN exprof_user;
+GRANT VIEW DEFINITION TO exprof_user;
+GO
